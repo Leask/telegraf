@@ -1,6 +1,6 @@
 {
   "name": "@leask/telegraf",
-  "version": "6.0.0",
+  "version": "6.0.1",
   "description": "Modern Telegram Bot Framework",
   "license": "MIT",
   "publishConfig": {
