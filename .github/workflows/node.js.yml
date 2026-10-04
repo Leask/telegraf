@@ -4,6 +4,7 @@ on:
   push:
     branches: [v4, v5, bot-api-9.6-sync]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
