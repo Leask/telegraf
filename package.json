@@ -94,12 +94,11 @@
   },
   "types": "./typings/index.d.ts",
   "dependencies": {
-    "@telegraf/types": "npm:@leask/types@9.6.0",
+    "@telegraf/types": "git+https://github.com/Leask/types.git#30c5b0202772f0d4fc06d818ce1c57307b3dbdf6",
     "debug": "^4.4.3",
     "mri": "^1.2.0",
     "p-timeout": "^7.0.1",
-    "safe-compare": "^1.1.4",
-    "sandwich-stream": "^2.0.2"
+    "safe-compare": "^1.1.4"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",

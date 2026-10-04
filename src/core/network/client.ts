@@ -4,14 +4,16 @@ import * as fs from 'fs'
 import { stat, realpath } from 'fs/promises'
 import * as http from 'http'
 import * as path from 'path'
+import d from 'debug'
 import { Readable } from 'stream'
 import { hasProp } from '../helpers/check'
 import { InputFile, Opts, Telegram } from '../types/typegram'
 import { compactOptions } from '../helpers/compact'
 import MultipartStream from './multipart-stream'
-import TelegramError from './error'
+import TelegramError, { TelegrafNetworkError } from './error'
 import { URL } from 'url'
-const debug = require('debug')('telegraf:client')
+import { types } from 'util'
+const debug = d('telegraf:client')
 const { isStream } = MultipartStream
 const REQUEST_TIMEOUT = 500_000 // ms
 
@@ -55,11 +57,14 @@ function withTimeout(config: RequestConfig, timeout: number) {
       cleanup: () => undefined,
     }
   }
-  if (typeof AbortSignal.any === 'function') {
+  const abortSignal = AbortSignal as typeof AbortSignal & {
+    any?: (signals: globalThis.AbortSignal[]) => globalThis.AbortSignal
+  }
+  if (typeof abortSignal.any === 'function') {
     return {
       config: {
         ...config,
-        signal: AbortSignal.any([
+        signal: abortSignal.any([
           config.signal as globalThis.AbortSignal,
           timeoutSignal,
         ]),
@@ -69,12 +74,14 @@ function withTimeout(config: RequestConfig, timeout: number) {
   }
 
   const controller = new AbortController()
-  const abort = () => controller.abort()
   const signal = config.signal as globalThis.AbortSignal
-  if (signal.aborted || timeoutSignal.aborted) controller.abort()
+  const abort = () => controller.abort(signal.reason)
+  const expire = () => controller.abort(timeoutSignal.reason)
+  if (signal.aborted) abort()
+  else if (timeoutSignal.aborted) expire()
   else {
     signal.addEventListener('abort', abort, { once: true })
-    timeoutSignal.addEventListener('abort', abort, { once: true })
+    timeoutSignal.addEventListener('abort', expire, { once: true })
   }
   return {
     config: {
@@ -83,7 +90,7 @@ function withTimeout(config: RequestConfig, timeout: number) {
     },
     cleanup: () => {
       signal.removeEventListener('abort', abort)
-      timeoutSignal.removeEventListener('abort', abort)
+      timeoutSignal.removeEventListener('abort', expire)
     },
   }
 }
@@ -161,27 +168,38 @@ const DEFAULT_OPTIONS: ApiClient.Options = {
   requestTimeout: REQUEST_TIMEOUT,
 }
 
-function isInputFile(value: unknown): value is InputFile {
+/** Keys whose values are Bot API objects consisting of just `{ url }` (WebAppInfo, LoginUrl), never files */
+const URL_OBJECT_KEYS = new Set(['web_app', 'login_url'])
+
+/**
+ * @param key the property the value is stored under, if any
+ */
+function isInputFile(value: unknown, key?: string): value is InputFile {
+  if (!value || typeof value !== 'object') return false
+  if (hasProp(value, 'source') && !!value.source) return true
+  // a URL file is exactly `{ url, filename? }`; objects with other keys (URL buttons,
+  // text_link entities, link media) are Bot API objects that must be sent as JSON
   return (
-    !!value &&
-    typeof value === 'object' &&
-    ((hasProp(value, 'source') && !!value.source) ||
-      (hasProp(value, 'url') && !!value.url))
+    hasProp(value, 'url') &&
+    !!value.url &&
+    Object.keys(value).every((k) => k === 'url' || k === 'filename') &&
+    !(key !== undefined && URL_OBJECT_KEYS.has(key))
   )
 }
 
-function includesMediaValue(value: unknown): boolean {
+function includesMediaValue(value: unknown, key?: string): boolean {
   if (!value || typeof value !== 'object') return false
   if (Buffer.isBuffer(value) || isStream(value)) return false
-  if (isInputFile(value)) return true
-  if (Array.isArray(value)) return value.some(includesMediaValue)
-  return Object.values(value).some(includesMediaValue)
+  if (isInputFile(value, key)) return true
+  if (Array.isArray(value))
+    return value.some((item) => includesMediaValue(item))
+  return Object.entries(value).some(([k, v]) => includesMediaValue(v, k))
 }
 
 function includesMedia(payload: Record<string, unknown>) {
   return Object.entries(payload).some(([key, value]) => {
     if (key === 'link_preview_options') return false
-    return includesMediaValue(value)
+    return includesMediaValue(value, key)
   })
 }
 
@@ -217,12 +235,15 @@ async function buildFormDataConfig(
   }
   const boundary = crypto.randomBytes(32).toString('hex')
   const formData = new MultipartStream(boundary)
-  await Promise.all(
-    Object.keys(payload).map((key) =>
+  try {
+    for (const key of Object.keys(payload)) {
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
-      attachFormValue(formData, key, payload[key], options)
-    )
-  )
+      await attachFormValue(formData, key, payload[key], options)
+    }
+  } catch (error) {
+    formData.destroy()
+    throw error
+  }
   return {
     method: 'POST',
     headers: {
@@ -233,11 +254,11 @@ async function buildFormDataConfig(
   }
 }
 
-async function attachFormValue(
+export async function attachFormValue(
   form: MultipartStream,
   id: string,
   value: unknown,
-  options: ApiClient.Options
+  options: ApiClient.Options = DEFAULT_OPTIONS
 ) {
   if (value == null) {
     return
@@ -253,11 +274,18 @@ async function attachFormValue(
     })
     return
   }
-  if (isInputFile(value)) {
+  if (isInputFile(value, id)) {
+    if (id === 'thumbnail') {
+      const reference = await attachNestedFiles(form, value, options, id)
+      return form.addPart({
+        headers: { 'content-disposition': `form-data; name="${id}"` },
+        body: reference as string,
+      })
+    }
     return await attachFormMedia(form, value, id, options)
   }
   if (Array.isArray(value) || typeof value === 'object') {
-    const packedValue = await attachNestedFiles(form, value, options)
+    const packedValue = await attachNestedFiles(form, value, options, id)
     return form.addPart({
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: JSON.stringify(packedValue),
@@ -272,24 +300,26 @@ async function attachFormValue(
 async function attachNestedFiles(
   form: MultipartStream,
   value: unknown,
-  options: ApiClient.Options
+  options: ApiClient.Options,
+  key?: string
 ): Promise<unknown> {
   if (!value || typeof value !== 'object') return value
   if (Buffer.isBuffer(value) || isStream(value)) return value
-  if (isInputFile(value)) {
+  if (isInputFile(value, key)) {
     const attachmentId = crypto.randomBytes(16).toString('hex')
     await attachFormMedia(form, value, attachmentId, options)
     return `attach://${attachmentId}`
   }
   if (Array.isArray(value)) {
-    return await Promise.all(
-      value.map((item) => attachNestedFiles(form, item, options))
-    )
+    const items = []
+    for (const item of value)
+      items.push(await attachNestedFiles(form, item, options))
+    return items
   }
 
   const result: Record<string, unknown> = {}
   for (const [key, nestedValue] of Object.entries(value)) {
-    result[key] = await attachNestedFiles(form, nestedValue, options)
+    result[key] = await attachNestedFiles(form, nestedValue, options, key)
   }
   return result
 }
@@ -376,58 +406,190 @@ async function answerToWebhook(
   return true
 }
 
-function setErrorField(
-  error: Error,
-  key: 'message' | 'stack',
-  value: string | undefined
-) {
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+])
+
+const MAX_CAUSE_DEPTH = 4
+
+function redactToken(value: string, token: string): string
+function redactToken<T>(value: T, token: string): T
+function redactToken(value: unknown, token: string) {
+  if (typeof value !== 'string') return value
+  const text = token ? value.split(token).join('[REDACTED]') : value
+  return text
+    .replace(/\/(bot|user)(\d+):[^/\s]+(?=\/|$)/g, '/$1$2:[REDACTED]')
+    .replace(/\b(\d{5,}):[A-Za-z0-9_-]{20,}\b/g, '$1:[REDACTED]')
+}
+
+function errorString(error: unknown, key: 'message' | 'name' | 'stack') {
+  if (!error || typeof error !== 'object') return undefined
+  let value: unknown
   try {
-    error[key] = value as never
+    value = (error as Record<string, unknown>)[key]
+  } catch {
+    return undefined
+  }
+  return typeof value === 'string' ? value : undefined
+}
+
+function errorCode(error: unknown) {
+  if (!error || typeof error !== 'object') return undefined
+  let value: unknown
+  try {
+    value = (error as { code?: unknown }).code
+  } catch {
+    return undefined
+  }
+  return typeof value === 'string' || typeof value === 'number'
+    ? value
+    : undefined
+}
+
+function errorName(error: unknown) {
+  const name = errorString(error, 'name')
+  return name && name !== 'Error' ? name : undefined
+}
+
+function errorCause(error: unknown) {
+  if (!error || typeof error !== 'object') return undefined
+  try {
+    return (error as { cause?: unknown }).cause
+  } catch {
+    return undefined
+  }
+}
+
+function isTransientNetworkError(
+  error: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0
+): boolean {
+  if (depth >= MAX_CAUSE_DEPTH) return false
+  if (!error || typeof error !== 'object') return false
+  if (seen.has(error)) return false
+  seen.add(error)
+
+  if (errorName(error) === 'TimeoutError') return true
+
+  const code = errorCode(error)
+  if (typeof code === 'string' && TRANSIENT_NETWORK_CODES.has(code)) {
     return true
-  } catch {
-    try {
-      Object.defineProperty(error, key, {
-        value,
-        configurable: true,
-        writable: true,
-      })
-      return true
-    } catch {
-      return false
-    }
   }
+
+  const cause = errorCause(error)
+  return isTransientNetworkError(cause, seen, depth + 1)
 }
 
-function withCause(error: Error, cause: Error) {
+function sanitizeObject(
+  value: object,
+  token: string,
+  seen: WeakSet<object>,
+  depth: number
+) {
+  const clean: Record<string, unknown> = Object.create(null)
+  let keys: string[]
   try {
-    Object.defineProperty(error, 'cause', {
-      value: cause,
-      configurable: true,
-      writable: true,
-    })
+    keys = Object.getOwnPropertyNames(value)
   } catch {
-    // Ignore: this is only a best-effort fallback when redacting native errors.
+    return '[Uninspectable object]'
   }
-  return error
+
+  for (const key of keys) {
+    let desc: PropertyDescriptor | undefined
+    try {
+      desc = Object.getOwnPropertyDescriptor(value, key)
+    } catch {
+      clean[redactToken(key, token)] = '[Uninspectable property]'
+      continue
+    }
+    if (!desc) continue
+    clean[redactToken(key, token)] =
+      'value' in desc
+        ? sanitizeCause(desc.value, token, seen, depth + 1)
+        : '[Getter]'
+  }
+  return clean
 }
 
-function redactToken(error: Error): never {
-  const redact = (value: string) =>
-    value.replace(/\/(bot|user)(\d+):[^/]+\//, '/$1$2:[REDACTED]/')
-  const message = redact(error.message)
-  const stack = error.stack ? redact(error.stack) : undefined
-  const redacted =
-    setErrorField(error, 'message', message) &&
-    (stack === undefined || setErrorField(error, 'stack', stack))
-  if (redacted) {
-    throw error
+function sanitizeCause(
+  error: unknown,
+  token: string,
+  seen = new WeakSet<object>(),
+  depth = 0
+): unknown {
+  if (typeof error === 'string') return redactToken(error, token)
+  if (typeof error === 'function') return '[Function]'
+  if (typeof error === 'symbol') return '[Symbol]'
+  if (!error || typeof error !== 'object') return error
+  if (depth >= MAX_CAUSE_DEPTH) return '[Truncated]'
+  if (seen.has(error)) return '[Circular]'
+  seen.add(error)
+  let isError: boolean
+  try {
+    isError = types.isNativeError(error) || error instanceof Error
+  } catch {
+    return '[Uninspectable object]'
   }
-  const fallback = withCause(new Error(message), error)
-  fallback.name = error.name
-  if (stack !== undefined) {
-    setErrorField(fallback, 'stack', stack)
+  if (!isError) return sanitizeObject(error, token, seen, depth)
+
+  const cause = errorCause(error)
+  const options =
+    cause === undefined
+      ? undefined
+      : { cause: sanitizeCause(cause, token, seen, depth + 1) }
+  const message = errorString(error, 'message') ?? errorName(error) ?? 'Error'
+  const safe = new Error(redactToken(message, token), options)
+  safe.name = redactToken(errorString(error, 'name') ?? 'Error', token)
+  const stack = errorString(error, 'stack')
+  if (stack) safe.stack = redactToken(stack, token)
+
+  const code = errorCode(error)
+  if (code !== undefined) {
+    Object.defineProperty(safe, 'code', {
+      value: redactToken(code, token),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    })
   }
-  throw fallback
+  return safe
+}
+
+function networkError<M extends keyof Telegram>(
+  method: M,
+  options: ApiClient.Options,
+  token: string,
+  error: unknown
+): never {
+  const message =
+    typeof error === 'string' ? error : errorString(error, 'message')
+  const detail = message ? `: ${redactToken(message, token)}` : ''
+  throw new TelegrafNetworkError(
+    `Network request failed for ${String(method)}${detail}`,
+    {
+      method: String(method),
+      apiRoot: redactToken(options.apiRoot, token),
+      apiMode: options.apiMode,
+      testEnv: options.testEnv,
+    },
+    {
+      cause: sanitizeCause(error, token),
+      code: redactToken(errorCode(error), token),
+      errorName: redactToken(errorName(error), token),
+      transient: isTransientNetworkError(error),
+    }
+  )
 }
 
 type Response = http.ServerResponse
@@ -494,31 +656,63 @@ class ApiClient {
       ? await buildFormDataConfig({ method, ...payload }, options)
       : await buildJSONConfig(payload)
     const apiUrl = new URL(
-      `./${options.apiMode}${token}${options.testEnv ? '/test' : ''}/${String(
-        method
-      )}`,
+      `./${options.apiMode}${token}${
+        options.testEnv ? '/test' : ''
+      }/${String(method)}`,
       options.apiRoot
     )
-    config.signal = signal
-    const res = await fetchWithTimeout(
-      options.fetch,
-      apiUrl,
-      config,
-      options.requestTimeout
-    ).catch(redactToken)
-    if (res.status >= 500) {
-      const errorPayload = {
-        error_code: res.status,
-        description: res.statusText,
+    const body =
+      config.body instanceof MultipartStream ? config.body : undefined
+    const upload = new AbortController()
+    let bodyError: Error | undefined
+    const abortUpload = () => upload.abort(signal?.reason)
+    const failUpload = (error: Error) => {
+      bodyError = error
+      upload.abort(error)
+    }
+    if (body) {
+      if (signal?.aborted) abortUpload()
+      else signal?.addEventListener('abort', abortUpload, { once: true })
+      body.once('error', failUpload)
+    }
+    config.signal = body ? upload.signal : signal
+    const request = withTimeout(config, options.requestTimeout)
+    try {
+      let res
+      try {
+        res = await options.fetch(
+          apiUrl,
+          request.config as globalThis.RequestInit
+        )
+      } catch (error) {
+        return networkError(method, options, token, bodyError ?? error)
       }
-      throw new TelegramError(errorPayload, { method, payload })
+      const httpError = () =>
+        new TelegramError(
+          { error_code: res.status, description: res.statusText },
+          { method, payload }
+        )
+      if (res.status >= 500) throw httpError()
+      let data: ApiResponse<ReturnType<Telegram[M]>>
+      try {
+        data = (await res.json()) as typeof data
+      } catch (error) {
+        if (res.status >= 400) throw httpError()
+        const reason = request.config.signal?.aborted
+          ? request.config.signal.reason
+          : error
+        return networkError(method, options, token, reason)
+      }
+      if (!data.ok) {
+        debug('API call failed', data)
+        throw new TelegramError(data, { method, payload })
+      }
+      return data.result
+    } finally {
+      body?.destroy()
+      signal?.removeEventListener('abort', abortUpload)
+      request.cleanup()
     }
-    const data = (await res.json()) as ApiResponse<ReturnType<Telegram[M]>>
-    if (!data.ok) {
-      debug('API call failed', data)
-      throw new TelegramError(data, { method, payload })
-    }
-    return data.result
   }
 }
 

@@ -6,14 +6,6 @@ import { URL } from 'url'
 import { FmtString } from './format'
 import { fmtCaption } from './core/helpers/util'
 
-function normalisePollOptions(
-  options: readonly string[] | readonly tg.InputPollOption[]
-): readonly tg.InputPollOption[] {
-  return options.map((option) =>
-    typeof option === 'string' ? { text: option } : option
-  )
-}
-
 export class Telegram extends ApiClient {
   /**
    * Get basic information about the bot
@@ -366,7 +358,11 @@ export class Telegram extends ApiClient {
     sticker: tg.Opts<'sendSticker'>['sticker'],
     extra?: tt.ExtraSticker
   ) {
-    return this.callApi('sendSticker', { chat_id: chatId, sticker, ...extra })
+    return this.callApi('sendSticker', {
+      chat_id: chatId,
+      sticker,
+      ...extra,
+    })
   }
 
   /**
@@ -477,26 +473,30 @@ export class Telegram extends ApiClient {
     media: tt.MediaGroup,
     extra?: tt.ExtraMediaGroup
   ) {
-    return this.callApi('sendMediaGroup', { chat_id: chatId, media, ...extra })
+    return this.callApi('sendMediaGroup', {
+      chat_id: chatId,
+      media,
+      ...extra,
+    })
   }
 
   /**
    * Send a native poll.
    * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
    * @param question Poll question, 1-255 characters
-   * @param options A JSON-serialized list of answer options, 2-10 strings 1-100 characters each
+   * @param options Answer options: plain texts, or `InputPollOption` objects to add formatting or `media`
    */
   sendPoll(
     chatId: number | string,
     question: string,
-    options: readonly string[] | readonly tg.InputPollOption[],
+    options: readonly tt.PollOption[],
     extra?: tt.ExtraPoll
   ) {
     return this.callApi('sendPoll', {
       chat_id: chatId,
       type: 'regular',
       question,
-      options: normalisePollOptions(options),
+      options: options.map(toInputPollOption),
       ...extra,
     })
   }
@@ -505,19 +505,19 @@ export class Telegram extends ApiClient {
    * Send a native quiz.
    * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
    * @param question Poll question, 1-255 characters
-   * @param options A JSON-serialized list of answer options, 2-10 strings 1-100 characters each
+   * @param options Answer options: plain texts, or `InputPollOption` objects to add formatting or `media`
    */
   sendQuiz(
     chatId: number | string,
     question: string,
-    options: readonly string[] | readonly tg.InputPollOption[],
+    options: readonly tt.PollOption[],
     extra?: tt.ExtraPoll
   ) {
     return this.callApi('sendPoll', {
       chat_id: chatId,
       type: 'quiz',
       question,
-      options: normalisePollOptions(options),
+      options: options.map(toInputPollOption),
       ...extra,
     })
   }
@@ -549,8 +549,14 @@ export class Telegram extends ApiClient {
   /**
    * @param chatId Unique identifier for the target chat or username of the target supergroup or channel (in the format @channelusername)
    */
-  getChatAdministrators(chatId: number | string) {
-    return this.callApi('getChatAdministrators', { chat_id: chatId })
+  getChatAdministrators(
+    chatId: number | string,
+    extra?: tt.ExtraGetChatAdministrators
+  ) {
+    return this.callApi('getChatAdministrators', {
+      chat_id: chatId,
+      ...extra,
+    })
   }
 
   /**
@@ -559,7 +565,10 @@ export class Telegram extends ApiClient {
    * @param userId Unique identifier of the target user
    */
   getChatMember(chatId: string | number, userId: number) {
-    return this.callApi('getChatMember', { chat_id: chatId, user_id: userId })
+    return this.callApi('getChatMember', {
+      chat_id: chatId,
+      user_id: userId,
+    })
   }
 
   /**
@@ -567,7 +576,7 @@ export class Telegram extends ApiClient {
    * @param chatId Unique identifier for the target chat or username of the target supergroup or channel (in the format @channelusername)
    */
   getChatMembersCount(chatId: string | number) {
-    return this.callApi('getChatMembersCount', { chat_id: chatId })
+    return this.getChatMemberCount(chatId)
   }
 
   getChatMemberCount(chatId: string | number) {
@@ -739,7 +748,10 @@ export class Telegram extends ApiClient {
   }
 
   setChatDescription(chatId: number | string, description?: string) {
-    return this.callApi('setChatDescription', { chat_id: chatId, description })
+    return this.callApi('setChatDescription', {
+      chat_id: chatId,
+      description,
+    })
   }
 
   /**
@@ -891,23 +903,41 @@ export class Telegram extends ApiClient {
    * @param chatId Required if inlineMessageId is not specified. Unique identifier for the target chat or username of the target channel (in the format @channelusername)
    * @param messageId Required if inlineMessageId is not specified. Identifier of the sent message
    * @param inlineMessageId Required if chatId and messageId are not specified. Identifier of the inline message
-   * @param text New text of the message
+   * @param text New text of the message, or `undefined` when replacing the content with `extra.rich_message`
    */
   editMessageText(
     chatId: number | string | undefined,
     messageId: number | undefined,
     inlineMessageId: string | undefined,
-    text: string | FmtString,
-    extra?: tt.ExtraEditMessageText
+    ...[text, extra]: tt.TextOrRichMessageEdit<tt.ExtraEditMessageText>
   ) {
-    const t = FmtString.normalise(text)
-    return this.callApi('editMessageText', {
-      chat_id: chatId,
-      message_id: messageId,
-      inline_message_id: inlineMessageId,
-      ...extra,
-      ...t,
-    } as tg.Opts<'editMessageText'>)
+    const base = {
+      entities: extra?.entities,
+      parse_mode: extra?.parse_mode,
+      reply_markup: extra?.reply_markup,
+      link_preview_options: extra?.link_preview_options,
+      business_connection_id: extra?.business_connection_id,
+      ...textOrRichMessage('editMessageText', text, extra?.rich_message),
+    }
+
+    if (inlineMessageId !== undefined) {
+      return this.callApi('editMessageText', {
+        ...base,
+        inline_message_id: inlineMessageId,
+      } as unknown as tg.Opts<'editMessageText'>)
+    }
+
+    if (chatId !== undefined && messageId !== undefined) {
+      return this.callApi('editMessageText', {
+        ...base,
+        chat_id: chatId,
+        message_id: messageId,
+      } as unknown as tg.Opts<'editMessageText'>)
+    }
+
+    throw new Error(
+      'Telegram: editMessageText requires either inlineMessageId or chatId and messageId'
+    )
   }
 
   /**
@@ -1043,6 +1073,118 @@ export class Telegram extends ApiClient {
     return this.callApi('deleteMessages', {
       chat_id: chatId,
       message_ids: messageIds,
+    })
+  }
+
+  /**
+   * Edit the text of an ephemeral message. Returns True on success.
+   * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+   * @param receiverUserId Identifier of the user who received the message
+   * @param ephemeralMessageId Unique identifier of the ephemeral message to edit
+   * @param text New text of the message, or `undefined` when replacing the content with `extra.rich_message`
+   */
+  editEphemeralMessageText(
+    chatId: number | string,
+    receiverUserId: number,
+    ephemeralMessageId: number,
+    ...[text, extra]: tt.TextOrRichMessageEdit<tt.ExtraEditEphemeralMessageText>
+  ) {
+    return this.callApi('editEphemeralMessageText', {
+      chat_id: chatId,
+      receiver_user_id: receiverUserId,
+      ephemeral_message_id: ephemeralMessageId,
+      ...extra,
+      ...textOrRichMessage(
+        'editEphemeralMessageText',
+        text,
+        extra?.rich_message
+      ),
+    } as tg.Opts<'editEphemeralMessageText'>)
+  }
+
+  /**
+   * Edit the caption of an ephemeral message. Returns True on success.
+   * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+   * @param receiverUserId Identifier of the user who received the message
+   * @param ephemeralMessageId Unique identifier of the ephemeral message to edit
+   * @param caption New caption of the message
+   */
+  editEphemeralMessageCaption(
+    chatId: number | string,
+    receiverUserId: number,
+    ephemeralMessageId: number,
+    caption: string | FmtString | undefined,
+    extra?: tt.ExtraEditEphemeralMessageCaption
+  ) {
+    return this.callApi('editEphemeralMessageCaption', {
+      chat_id: chatId,
+      receiver_user_id: receiverUserId,
+      ephemeral_message_id: ephemeralMessageId,
+      ...extra,
+      ...fmtCaption({ caption }),
+    })
+  }
+
+  /**
+   * Edit the media content of an ephemeral message. Returns True on success.
+   * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+   * @param receiverUserId Identifier of the user who received the message
+   * @param ephemeralMessageId Unique identifier of the ephemeral message to edit
+   * @param media New media of message
+   * @param extra Additional parameters, such as reply_markup
+   */
+  editEphemeralMessageMedia(
+    chatId: number | string,
+    receiverUserId: number,
+    ephemeralMessageId: number,
+    media: tt.WrapCaption<tg.InputMedia>,
+    extra?: tt.ExtraEditEphemeralMessageMedia
+  ) {
+    return this.callApi('editEphemeralMessageMedia', {
+      chat_id: chatId,
+      receiver_user_id: receiverUserId,
+      ephemeral_message_id: ephemeralMessageId,
+      media: fmtCaption(media),
+      ...extra,
+    })
+  }
+
+  /**
+   * Edit only the reply markup of an ephemeral message. Returns True on success.
+   * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+   * @param receiverUserId Identifier of the user who received the message
+   * @param ephemeralMessageId Unique identifier of the ephemeral message to edit
+   * @param markup A JSON-serialized object for an inline keyboard.
+   */
+  editEphemeralMessageReplyMarkup(
+    chatId: number | string,
+    receiverUserId: number,
+    ephemeralMessageId: number,
+    markup: tg.InlineKeyboardMarkup | undefined
+  ) {
+    return this.callApi('editEphemeralMessageReplyMarkup', {
+      chat_id: chatId,
+      receiver_user_id: receiverUserId,
+      ephemeral_message_id: ephemeralMessageId,
+      reply_markup: markup,
+    })
+  }
+
+  /**
+   * Delete an ephemeral message. Returns True on success.
+   * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
+   * @param receiverUserId Identifier of the user who received the message
+   * @param ephemeralMessageId Unique identifier of the ephemeral message to delete
+   */
+  deleteEphemeralMessage(
+    chatId: number | string,
+    receiverUserId: number,
+    ephemeralMessageId: number
+  ) {
+    return this.callApi('deleteEphemeralMessage', {
+      chat_id: chatId,
+      receiver_user_id: receiverUserId,
+      ephemeral_message_id: ephemeralMessageId,
     })
   }
 
@@ -1353,7 +1495,7 @@ export class Telegram extends ApiClient {
     name: string,
     userId: number,
     thumbnail: tg.Opts<'setStickerSetThumbnail'>['thumbnail'] | undefined,
-    format: 'static' | 'animated' | 'video'
+    format: tg.Opts<'setStickerSetThumbnail'>['format']
   ) {
     return this.callApi('setStickerSetThumbnail', {
       name,
@@ -1364,7 +1506,10 @@ export class Telegram extends ApiClient {
   }
 
   setStickerMaskPosition(sticker: string, mask_position?: tg.MaskPosition) {
-    return this.callApi('setStickerMaskPosition', { sticker, mask_position })
+    return this.callApi('setStickerMaskPosition', {
+      sticker,
+      mask_position,
+    })
   }
 
   setStickerKeywords(sticker: string, keywords?: string[]) {
@@ -1400,11 +1545,6 @@ export class Telegram extends ApiClient {
 
   getCustomEmojiStickers(custom_emoji_ids: string[]) {
     return this.callApi('getCustomEmojiStickers', { custom_emoji_ids })
-  }
-
-  /** Use this method to get information about the connection of the bot with a business account. */
-  getBusinessConnection(business_connection_id: string) {
-    return this.callApi('getBusinessConnection', { business_connection_id })
   }
 
   /**
@@ -1660,7 +1800,6 @@ export class Telegram extends ApiClient {
       for_channels: forChannels,
     })
   }
-
   /**
    * Returns the bot's Telegram Star transactions in chronological order.
    * @param offset
@@ -1680,6 +1819,10 @@ export class Telegram extends ApiClient {
       user_id: userId,
       telegram_payment_charge_id: telegramPaymentChargeId,
     })
+  }
+
+  getBusinessConnection(business_connection_id: string) {
+    return this.callApi('getBusinessConnection', { business_connection_id })
   }
 
   sendChecklist(args: tg.Opts<'sendChecklist'>) {
@@ -1879,6 +2022,95 @@ export class Telegram extends ApiClient {
   }
 
   /**
+   * Send a rich message combining formatted text, tables, media collages, buttons, and file attachments.
+   * Content goes in `rich_message` as `blocks`, `html` or `markdown`; media referenced from it is listed in `rich_message.media`.
+   * @see https://core.telegram.org/bots/api#sendrichmessage
+   */
+  sendRichMessage(args: tg.Opts<'sendRichMessage'>) {
+    return this.callApi('sendRichMessage', args)
+  }
+
+  /**
+   * Stream a partial rich message to a user while it is being generated.
+   * Supported only in private chats of bots with forum topic mode enabled. Changes of drafts with the same `draft_id` are animated.
+   * @see https://core.telegram.org/bots/api#sendrichmessagedraft
+   */
+  sendRichMessageDraft(args: tg.Opts<'sendRichMessageDraft'>) {
+    return this.callApi('sendRichMessageDraft', args)
+  }
+
+  /**
+   * Send a still `photo` with its accompanying `live_photo` video.
+   * Both fields accept file IDs or new uploads. `caption` may be a `FmtString`.
+   * @see https://core.telegram.org/bots/api#sendlivephoto
+   */
+  sendLivePhoto(args: tt.WrapCaption<tg.Opts<'sendLivePhoto'>>) {
+    return this.callApi('sendLivePhoto', fmtCaption(args))
+  }
+
+  /**
+   * Remove a message reaction by the specified `user_id` or `actor_chat_id`.
+   * @see https://core.telegram.org/bots/api#deletemessagereaction
+   */
+  deleteMessageReaction(args: tg.Opts<'deleteMessageReaction'>) {
+    return this.callApi('deleteMessageReaction', args)
+  }
+
+  /**
+   * Remove recent reactions by `user_id` or `actor_chat_id` across the chat.
+   * @see https://core.telegram.org/bots/api#deleteallmessagereactions
+   */
+  deleteAllMessageReactions(args: tg.Opts<'deleteAllMessageReactions'>) {
+    return this.callApi('deleteAllMessageReactions', args)
+  }
+
+  /**
+   * Answer a join request query, the `query_id` of a `chat_join_request` update.
+   * Requires the can_invite_users administrator right in the chat.
+   * @see https://core.telegram.org/bots/api#answerchatjoinrequestquery
+   */
+  answerChatJoinRequestQuery(args: tg.Opts<'answerChatJoinRequestQuery'>) {
+    return this.callApi('answerChatJoinRequestQuery', args)
+  }
+
+  /**
+   * Send a Web App the bot can use to review a join request query.
+   * @see https://core.telegram.org/bots/api#sendchatjoinrequestwebapp
+   */
+  sendChatJoinRequestWebApp(args: tg.Opts<'sendChatJoinRequestWebApp'>) {
+    return this.callApi('sendChatJoinRequestWebApp', args)
+  }
+
+  /**
+   * Send a message in response to a guest query made on behalf of a user by another, opted-in bot.
+   * The query id is the `guest_query_id` of the message in a `guest_message` update.
+   * @see https://core.telegram.org/bots/api#answerguestquery
+   */
+  answerGuestQuery(args: tg.Opts<'answerGuestQuery'>) {
+    return this.callApi('answerGuestQuery', args)
+  }
+
+  /**
+   * Get the access settings granted by a managed bot to the bot that manages it.
+   * @see https://core.telegram.org/bots/api#getmanagedbotaccesssettings
+   */
+  getManagedBotAccessSettings(args: tg.Opts<'getManagedBotAccessSettings'>) {
+    return this.callApi('getManagedBotAccessSettings', args)
+  }
+
+  /**
+   * Change the access settings granted by a managed bot to the bot that manages it.
+   * @see https://core.telegram.org/bots/api#setmanagedbotaccesssettings
+   */
+  setManagedBotAccessSettings(args: tg.Opts<'setManagedBotAccessSettings'>) {
+    return this.callApi('setManagedBotAccessSettings', args)
+  }
+
+  getUserPersonalChatMessages(args: tg.Opts<'getUserPersonalChatMessages'>) {
+    return this.callApi('getUserPersonalChatMessages', args)
+  }
+
+  /**
    * Log out from the cloud Bot API server before launching the bot locally.
    */
   logOut() {
@@ -1894,3 +2126,29 @@ export class Telegram extends ApiClient {
 }
 
 export default Telegram
+
+function toInputPollOption(option: tt.PollOption): tg.InputPollOption {
+  return typeof option === 'string' ? { text: option } : option
+}
+
+/** Content fields of a text edit: `text` (with its entities) or `rich_message`, never both */
+function textOrRichMessage(
+  method: string,
+  text: string | FmtString | undefined,
+  richMessage: tg.InputRichMessage | undefined
+) {
+  if (richMessage !== undefined) {
+    if (text !== undefined) {
+      throw new Error(
+        `Telegram: ${method} accepts either text or extra.rich_message, not both`
+      )
+    }
+    return { rich_message: richMessage }
+  }
+  if (text === undefined) {
+    throw new Error(
+      `Telegram: ${method} requires either text or extra.rich_message`
+    )
+  }
+  return FmtString.normalise(text)
+}

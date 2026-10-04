@@ -7,7 +7,7 @@
 <p>Modern Telegram Bot API framework for Node.js</p>
 
 <a href="https://core.telegram.org/bots/api">
-	<img src="https://img.shields.io/badge/Bot%20API-v9.6-f36caf.svg?style=flat-square" alt="Bot API Version" />
+	<img src="https://img.shields.io/badge/Bot%20API-v10.3-f36caf.svg?style=flat-square" alt="Bot API Version" />
 </a>
 <a href="https://packagephobia.com/result?p=telegraf,node-telegram-bot-api">
 	<img src="https://flat.badgen.net/packagephobia/install/telegraf" alt="install size" />
@@ -24,11 +24,13 @@
 
 ## About v6
 
-Telegraf v6 is a major release focused on restoring full coverage of the
+This branch prepares Telegraf v6, a major release focused on coverage of the
 current Telegram Bot API while keeping the stable Telegraf programming model.
-It adds Bot API 9.6 support, runtime wrappers for every typed Bot API method,
+It adds Bot API 10.3 support, runtime wrappers for all 185 Bot API methods,
 updated TypeScript declarations, and multipart upload handling for nested
-payloads used by newer API objects.
+payloads used by newer API objects. This includes rich messages, live photos,
+guest queries, ephemeral messages, and expanded poll and chat management APIs.
+The v6 candidate is not yet an official npm release.
 
 Most existing v4 middleware, context, session, scene, webhook, and formatting
 patterns remain the intended migration path. Newer Bot API methods are exposed
@@ -36,11 +38,12 @@ through raw object-style calls such as `ctx.telegram.sendChecklist({ ... })`;
 positional convenience helpers are kept where Telegraf already had an
 established pattern.
 
-> Maintainer note: until the Bot API 9.6 update lands in the upstream
-> `telegraf/types` package, this branch uses the published temporary npm alias
-> `@telegraf/types: npm:@leask/types@9.6.0`. Before the final upstream release,
-> replace this dependency with the official `@telegraf/types` 9.6 release or
-> accepted upstream branch.
+> Maintainer note: [the companion types PR](https://github.com/telegraf/types/pull/14)
+> follows upstream's unified declarations and adds Bot API 10.3. Until it is
+> published, this branch pins `@telegraf/types` to the immutable HTTPS commit
+> [`30c5b02`](https://github.com/Leask/types/commit/30c5b0202772f0d4fc06d818ce1c57307b3dbdf6).
+> Installation requires Git, but no GitHub SSH credentials. Replace the pin
+> with the official `@telegraf/types` 10.3 release before publishing upstream.
 
 ## Introduction
 
@@ -52,7 +55,7 @@ Telegraf is a library that makes it simple for you to develop your own Telegram 
 
 ### Features
 
-- Full [Telegram Bot API 9.6](https://core.telegram.org/bots/api) support
+- [Telegram Bot API 10.3](https://core.telegram.org/bots/api) types and methods
 - Runtime wrappers for every typed official Bot API method
 - TypeScript declarations backed by `@telegraf/types`
 - Nested `InputFile` multipart uploads for modern media payloads
@@ -162,6 +165,9 @@ const bot = new Telegraf(process.env.BOT_TOKEN, {
 ```
 
 The custom fetch is used for both Bot API calls and URL attachments.
+Multipart uploads use Node.js streams directly, without `sandwich-stream`.
+Failed and cancelled uploads close their file streams, including sources that
+have not yet been read.
 
 ### `Telegraf` class
 
@@ -285,6 +291,18 @@ If middleware throws an error or times out, Telegraf calls `bot.handleError`. If
 
 Default `bot.handleError` always rethrows. You can overwrite it using `bot.catch` if you need to.
 
+Bot API transport and response-body failures reject with `TelegrafNetworkError`,
+not the original fetch error. Its `cause` is a sanitized diagnostic copy; the
+original error is never mutated. Use `errorName` for the underlying error name,
+`code` for a transport code when available, and `transient` for retryability.
+Telegram API and HTTP failures remain `TelegramError`; both extend
+`TelegrafError`. Middleware errors are not converted into network errors.
+
+Polling retries transient transport failures and stops promptly during retry
+backoff. An abort caused by `bot.stop()` is normal shutdown; an unsolicited
+abort is surfaced. Request timeouts cover response-body consumption as well
+as response headers.
+
 ⚠️ Swallowing unknown errors might leave the process in invalid state!
 
 ℹ️ In production, `systemd` or [`pm2`](https://www.npmjs.com/package/pm2) can restart your bot if it exits for any reason.
@@ -381,11 +399,9 @@ Telegraf is written in TypeScript and therefore ships with declaration files for
 It includes types for the complete Telegram API via `@telegraf/types`.
 While most types of Telegraf's API surface are self-explanatory, there are some notable things to keep in mind.
 
-Until `@telegraf/types` publishes the Bot API 9.6 update upstream, this v6
-branch pins the published temporary npm alias
-`@telegraf/types: npm:@leask/types@9.6.0`. This is a release-preparation
-detail, not a public API change; the dependency should be switched back to the
-official package before the final upstream release.
+The temporary Bot API 10.3 types dependency is described in [About v6](#about-v6).
+Imports remain `telegraf/types` and `@telegraf/types`; applications do not need
+to use a fork-specific module name.
 
 #### Extending `Context`
 
