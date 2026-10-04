@@ -13,6 +13,7 @@ import {
   InputMediaLivePhoto,
   InputPollOption,
   InputRichMessage,
+  InputRichMessageContent,
 } from './core/types/typegram'
 
 import { UnionKeys } from './core/helpers/deunionize'
@@ -106,26 +107,31 @@ export type ExtraEditMessageMedia = MakeExtra<
   'editMessageMedia',
   'message_id' | 'inline_message_id' | 'media'
 >
-export type ExtraEditMessageText = MakeExtra<
-  'editMessageText',
-  'message_id' | 'inline_message_id' | 'text'
->
+export type ExtraEditMessageText = Omit<
+  MakeExtra<'editMessageText', 'message_id' | 'inline_message_id' | 'text'>,
+  'rich_message'
+> & { rich_message?: InputRichMessage }
+/** Uploads require a definitely non-inline target. String file IDs remain valid. */
+export type RichMessageForEdit<InlineId extends string | undefined> = [
+  InlineId,
+] extends [undefined]
+  ? InputRichMessage
+  : InputRichMessageContent['rich_message']
 /**
  * Content arguments of a text edit: new `text` with optional extras, or `undefined` text with `extra.rich_message`.
  * The Bot API accepts exactly one of the two.
  */
-export type TextOrRichMessageEdit<Extra extends { rich_message?: unknown }> =
-  | TextEdit<Extra>
-  | RichMessageEdit<Extra>
+export type TextOrRichMessageEdit<
+  Extra extends { rich_message?: unknown },
+  Rich extends InputRichMessage = InputRichMessage,
+> = TextEdit<Extra> | RichMessageEdit<Extra, Rich>
 type TextEdit<Extra> = [
   text: string | FmtString,
   extra?: Expand<Omit<Extra, 'rich_message'> & { rich_message?: undefined }>,
 ]
-type RichMessageEdit<Extra> = [
+type RichMessageEdit<Extra, Rich> = [
   text: undefined,
-  extra: Expand<
-    Omit<Extra, 'rich_message'> & { rich_message: InputRichMessage }
-  >,
+  extra: Expand<Omit<Extra, 'rich_message'> & { rich_message: Rich }>,
 ]
 export type ExtraGame = MakeExtra<'sendGame', 'game_short_name'>
 export type ExtraGetChatAdministrators = MakeExtra<'getChatAdministrators'>

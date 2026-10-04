@@ -232,7 +232,11 @@ export class Context<U extends Deunionize<tg.Update> = tg.Update> {
   }
 
   get inlineMessageId() {
-    return (this.callbackQuery ?? this.chosenInlineResult)?.inline_message_id
+    return (this.callbackQuery ?? this.chosenInlineResult)
+      ?.inline_message_id as PropOr<
+      PropOr<U, 'callback_query'> | PropOr<U, 'chosen_inline_result'>,
+      'inline_message_id'
+    >
   }
 
   /** Shorthand for `ephemeral_message_id` of the message in the current update, if that message is ephemeral. */
@@ -412,7 +416,10 @@ export class Context<U extends Deunionize<tg.Update> = tg.Update> {
    * @see https://core.telegram.org/bots/api#editmessagetext
    */
   editMessageText(
-    ...content: tt.TextOrRichMessageEdit<tt.ExtraEditMessageText>
+    ...content: tt.TextOrRichMessageEdit<
+      tt.ExtraEditMessageText,
+      tt.RichMessageForEdit<Context<U>['inlineMessageId']>
+    >
   ) {
     this.assert(this.msgId ?? this.inlineMessageId, 'editMessageText')
     return this.telegram.editMessageText(

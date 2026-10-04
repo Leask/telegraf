@@ -41,7 +41,7 @@ established pattern.
 > Maintainer note: [the companion types PR](https://github.com/telegraf/types/pull/14)
 > follows upstream's unified declarations and adds Bot API 10.3. Until it is
 > published, this branch pins `@telegraf/types` to the immutable HTTPS commit
-> [`30c5b02`](https://github.com/Leask/types/commit/30c5b0202772f0d4fc06d818ce1c57307b3dbdf6).
+> [`88aa916`](https://github.com/Leask/types/commit/88aa916e2ef6efe851da244f23d5532ef1526738).
 > Installation requires Git, but no GitHub SSH credentials. Replace the pin
 > with the official `@telegraf/types` 10.3 release before publishing upstream.
 

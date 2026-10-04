@@ -2374,7 +2374,7 @@ test('Bot API 10.3 rich message fields are typed', (t) => {
     'sendRichMessageDraft.rich_message': hasField(
       draft,
       'rich_message',
-      'InputRichMessageDraft<F>'
+      'InputRichMessageDraft<never>'
     ),
     'sendRichMessageDraft.can_stop/keep_on_stop':
       hasOptionalField(draft, 'can_stop', 'boolean') &&
@@ -2392,8 +2392,10 @@ test('Bot API 10.3 rich message fields are typed', (t) => {
       getMethodReturnType(files.methods, 'sendRichMessageDraft') === 'true',
     'editMessageText text or rich_message (chat and inline overloads)':
       editMessageText.length === 2 &&
-      editMessageText.every(
-        (args) => args.includes(textVariant) && args.includes(richVariant)
+      editMessageText.every((args) => args.includes(textVariant)) &&
+      editMessageText[0].includes(richVariant) &&
+      editMessageText[1].includes(
+        'text?: undefined; rich_message: InputRichMessage<never>;'
       ),
     'editEphemeralMessageText text or rich_message':
       editEphemeralMessageText.length === 1 &&
@@ -2540,12 +2542,87 @@ test('thinking blocks are supported only by draft helpers', async (t) => {
   )
 })
 
+test('rich message upload types distinguish chat edits, inline edits and drafts', async (t) => {
+  await compileTypeScript(
+    'rich-upload-types.ts',
+    [
+      `import { Context, Input, Telegraf, Telegram } from '${packageRoot}'`,
+      `import type { Convenience, InputRichBlockDraft, InputRichMessageDraft, Opts, Update } from '${packageRoot}/types'`,
+      'declare const telegram: Telegram',
+      'declare const ctx: Context',
+      'declare const chat: Context<Update.MessageUpdate>',
+      'declare const inline: Context<Update.ChosenInlineResultUpdate>',
+      'declare const callback: Context<Update.CallbackQueryUpdate>',
+      'declare const inlineId: string | undefined',
+      'const file = Input.fromBuffer(Buffer.from("image"))',
+      'const url = Input.fromURLStream("https://example.test/image.png")',
+      'const uploaded = { blocks: [{ type: "photo", photo: { type: "photo", media: file } }] } as const',
+      'const media = { markdown: "![image](tg://photo?id=image)", media: [{ id: "image", media: { type: "photo", media: file } }] } as const',
+      'const remote = { blocks: [{ type: "photo", photo: { type: "photo", media: url } }] } as const',
+      'const cached = { blocks: [{ type: "photo", photo: { type: "photo", media: "file-id" } }] } as const',
+      'void telegram.editMessageText(1, 2, undefined, undefined, { rich_message: uploaded })',
+      'void telegram.editMessageText(1, 2, undefined, undefined, { rich_message: media })',
+      'void telegram.editMessageText(1, 2, undefined, undefined, { rich_message: remote })',
+      'void chat.editMessageText(undefined, { rich_message: uploaded })',
+      'const extra = { rich_message: uploaded } satisfies Convenience.ExtraEditMessageText',
+      'void chat.editMessageText(undefined, extra)',
+      'const bot = new Telegraf("test-token")',
+      'bot.on("message", ctx => ctx.editMessageText(undefined, { rich_message: uploaded }))',
+      'bot.action("edit", ctx => {',
+      '  // @ts-expect-error Inline callback targets must not accept uploads',
+      '  return ctx.editMessageText(undefined, { rich_message: uploaded })',
+      '})',
+      'void ctx.sendRichMessage(uploaded)',
+      'void ctx.editEphemeralMessageText(99, undefined, { rich_message: uploaded, ephemeral_message_id: 1 })',
+      'void telegram.editMessageText(undefined, undefined, "inline", undefined, { rich_message: cached })',
+      'void telegram.editMessageText(1, 2, inlineId, undefined, { rich_message: cached })',
+      'void inline.editMessageText(undefined, { rich_message: cached })',
+      'void callback.editMessageText(undefined, { rich_message: cached })',
+      'void ctx.editMessageText(undefined, { rich_message: cached })',
+      'void ctx.sendRichMessageDraft(1, cached)',
+      'void telegram.sendRichMessageDraft({ chat_id: 1, draft_id: 1, rich_message: cached })',
+      '// @ts-expect-error Inline edits cannot upload a block',
+      'void telegram.editMessageText(undefined, undefined, "inline", undefined, { rich_message: uploaded })',
+      '// @ts-expect-error Inline edits cannot upload explicit media',
+      'void telegram.editMessageText(undefined, undefined, "inline", undefined, { rich_message: media })',
+      '// @ts-expect-error URL InputFile objects are uploads too',
+      'void telegram.editMessageText(undefined, undefined, "inline", undefined, { rich_message: remote })',
+      '// @ts-expect-error An inline target wins even when chat IDs are supplied',
+      'void telegram.editMessageText(1, 2, "inline", undefined, { rich_message: uploaded })',
+      '// @ts-expect-error A possibly inline target must not accept uploads',
+      'void telegram.editMessageText(1, 2, inlineId, undefined, { rich_message: uploaded })',
+      '// @ts-expect-error An inline Context cannot upload',
+      'void inline.editMessageText(undefined, { rich_message: uploaded })',
+      '// @ts-expect-error Callback queries may originate from inline messages',
+      'void callback.editMessageText(undefined, { rich_message: uploaded })',
+      '// @ts-expect-error An un-narrowed Context may refer to an inline message',
+      'void ctx.editMessageText(undefined, { rich_message: uploaded })',
+      '// @ts-expect-error Draft helpers cannot upload a block',
+      'void ctx.sendRichMessageDraft(1, uploaded)',
+      '// @ts-expect-error Draft helpers cannot upload explicit media',
+      'void ctx.sendRichMessageDraft(1, media)',
+      '// @ts-expect-error Draft API calls cannot upload',
+      'void telegram.sendRichMessageDraft({ chat_id: 1, draft_id: 1, rich_message: uploaded })',
+      '// @ts-expect-error Draft block aliases cannot upload',
+      'const block: InputRichBlockDraft = uploaded.blocks[0]',
+      '// @ts-expect-error Draft message aliases cannot upload',
+      'const draft: InputRichMessageDraft = media',
+      '// @ts-expect-error Low-level callApi must preserve the draft restriction',
+      'void telegram.callApi("sendRichMessageDraft", { chat_id: 1, draft_id: 1, rich_message: media })',
+      '// @ts-expect-error Opts must preserve the inline restriction',
+      'const opts: Opts<"editMessageText"> = { inline_message_id: "inline", rich_message: uploaded }',
+      'void [block, draft, opts]',
+    ].join('\n')
+  )
+  t.pass()
+})
+
 test('rich message APIs are typed for Telegram and Context', async (t) => {
   await compileTypeScript(
     'rich-message-types.ts',
     [
       `import { Context, Input, Telegram } from '${packageRoot}'`,
-      `import type { Convenience, InputRichBlock, InputRichMessage, Message, RichMessage, RichMessageButton } from '${packageRoot}/types'`,
+      `import type { Convenience, InputRichBlock, InputRichMessage, InputRichMessageContent, Message, RichMessage, RichMessageButton, Update } from '${packageRoot}/types'`,
       '',
       'declare const ctx: Context',
       'declare const telegram: Telegram',
@@ -2567,6 +2644,8 @@ test('rich message APIs are typed for Telegram and Context', async (t) => {
       '    markdown: "![chart](tg://photo?id=chart)",',
       '    media: [{ id: "chart", media: { type: "photo", media: Input.fromBuffer(Buffer.from("x")) } }],',
       '}',
+      'const cached: InputRichMessageContent["rich_message"] = { blocks: [{ type: "photo", photo: { type: "photo", media: "file-id" } }] }',
+      'declare const chat: Context<Update.MessageUpdate>',
       'const extra: Convenience.ExtraRichMessage = { protect_content: true, ephemeral_message_parameters: { receiver_user_id: 1 } }',
       'const draftExtra: Convenience.ExtraRichMessageDraft = { can_stop: true, keep_on_stop: true }',
       '',
@@ -2579,13 +2658,14 @@ test('rich message APIs are typed for Telegram and Context', async (t) => {
       '    return content.blocks',
       '}',
       'const direct: Promise<Message.RichMessageMessage & Message.BusinessSentMessage> = telegram.sendRichMessage({ chat_id: "@channel", rich_message: { html: "<b>hi</b>" } })',
-      'const directDraft: Promise<true> = telegram.sendRichMessageDraft({ chat_id: 1, draft_id: 2, rich_message: rich })',
+      'const directDraft: Promise<true> = telegram.sendRichMessageDraft({ chat_id: 1, draft_id: 2, rich_message: cached })',
       '',
       '// editing into rich messages',
       'void telegram.editMessageText(1, 2, undefined, undefined, { rich_message: rich, reply_markup: { inline_keyboard: [] } })',
-      'void telegram.editMessageText(undefined, undefined, "inline", undefined, { rich_message: withMedia })',
+      'void telegram.editMessageText(undefined, undefined, "inline", undefined, { rich_message: cached })',
       'void telegram.editEphemeralMessageText(1, 99, 1, undefined, { rich_message: rich })',
-      'void ctx.editMessageText(undefined, { rich_message: rich })',
+      'void ctx.editMessageText(undefined, { rich_message: cached })',
+      'void chat.editMessageText(undefined, { rich_message: rich })',
       'void ctx.editEphemeralMessageText(99, undefined, { rich_message: rich, ephemeral_message_id: 1 })',
       '',
       '// text edits keep their signatures',
@@ -2607,13 +2687,13 @@ test('rich message APIs are typed for Telegram and Context', async (t) => {
       '// @ts-expect-error rich_message is positional on Context',
       'void ctx.replyWithRichMessage(rich, { rich_message: rich })',
       '// @ts-expect-error draft_id is positional on Context',
-      'void ctx.sendRichMessageDraft(1, rich, { draft_id: 2 })',
+      'void ctx.sendRichMessageDraft(1, cached, { draft_id: 2 })',
       '// @ts-expect-error drafts have no business connection',
-      'void ctx.sendRichMessageDraft(1, rich, { business_connection_id: "biz" })',
+      'void ctx.sendRichMessageDraft(1, cached, { business_connection_id: "biz" })',
       '// @ts-expect-error RichMessageButton is not any',
       'const notAButton: RichMessageButton = { nope: true }',
       '// @ts-expect-error drafts target private chats by numeric id',
-      'void telegram.sendRichMessageDraft({ chat_id: "@channel", draft_id: 1, rich_message: rich })',
+      'void telegram.sendRichMessageDraft({ chat_id: "@channel", draft_id: 1, rich_message: cached })',
       '// @ts-expect-error sendRichMessage requires rich_message',
       'void telegram.sendRichMessage({ chat_id: 1 })',
       '// @ts-expect-error text and rich_message are mutually exclusive',

@@ -905,11 +905,14 @@ export class Telegram extends ApiClient {
    * @param inlineMessageId Required if chatId and messageId are not specified. Identifier of the inline message
    * @param text New text of the message, or `undefined` when replacing the content with `extra.rich_message`
    */
-  editMessageText(
+  editMessageText<InlineId extends string | undefined>(
     chatId: number | string | undefined,
     messageId: number | undefined,
-    inlineMessageId: string | undefined,
-    ...[text, extra]: tt.TextOrRichMessageEdit<tt.ExtraEditMessageText>
+    inlineMessageId: InlineId,
+    ...[text, extra]: tt.TextOrRichMessageEdit<
+      tt.ExtraEditMessageText,
+      tt.RichMessageForEdit<NoInfer<InlineId>>
+    >
   ) {
     const base = {
       entities: extra?.entities,

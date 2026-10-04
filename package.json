@@ -94,7 +94,7 @@
   },
   "types": "./typings/index.d.ts",
   "dependencies": {
-    "@telegraf/types": "git+https://github.com/Leask/types.git#30c5b0202772f0d4fc06d818ce1c57307b3dbdf6",
+    "@telegraf/types": "git+https://github.com/Leask/types.git#88aa916e2ef6efe851da244f23d5532ef1526738",
     "debug": "^4.4.3",
     "mri": "^1.2.0",
     "p-timeout": "^7.0.1",
