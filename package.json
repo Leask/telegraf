@@ -90,7 +90,7 @@
   },
   "type": "commonjs",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.20"
   },
   "types": "./typings/index.d.ts",
   "dependencies": {

@@ -59,7 +59,7 @@ Telegraf is a library that makes it simple for you to develop your own Telegram 
 - Runtime wrappers for every typed official Bot API method
 - TypeScript declarations backed by `@telegraf/types`
 - Nested `InputFile` multipart uploads for modern media payloads
-- Native `fetch` by default on Node.js 20+
+- Native `fetch` by default on Node.js 22.20+
 - [Lightweight](https://packagephobia.com/result?p=telegraf,node-telegram-bot-api)
 - [AWS **λ**](https://docs.aws.amazon.com/lambda/latest/dg/nodejs-prog-model-handler.html)
   / [Firebase](https://firebase.google.com/products/functions/)
@@ -125,6 +125,9 @@ by [chatting with BotFather](https://core.telegram.org/bots#6-botfather).
 BotFather will give you a _token_, something like `123456789:AbCdefGhIJKlmNoPQRsTUVwxyZ`.
 
 ### Installation
+
+The v6 candidate requires Node.js 22.20 or later. Its current AVA 8 toolchain
+and upstream CI target Node 22, 24, and 26; Node 20 is no longer supported.
 
 ```shellscript
 $ npm install telegraf
